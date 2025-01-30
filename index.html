@@ -1,0 +1,392 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>3D Snake Game</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000; }
+        #score {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            color: #4eff4e;
+            font-family: 'Arial', sans-serif;
+            font-size: 24px;
+            z-index: 100;
+            text-shadow: 0 0 10px #00ff00;
+        }
+        #gameOver {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: #ff4444;
+            font-family: 'Arial', sans-serif;
+            font-size: 48px;
+            display: none;
+            z-index: 100;
+            text-align: center;
+            text-shadow: 0 0 20px #ff0000;
+        }
+        #instructions {
+            position: absolute;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            color: #ffffff;
+            font-family: 'Arial', sans-serif;
+            font-size: 18px;
+            text-align: center;
+            text-shadow: 0 0 10px #ffffff;
+        }
+    </style>
+</head>
+<body>
+    <div id="score">Score: 0</div>
+    <div id="gameOver">
+        Game Over!<br>
+        Press Space to Restart
+    </div>
+    <div id="instructions">
+        Use Arrow Keys to move<br>
+        Hit walls to teleport!
+    </div>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script>
+        let scene, camera, renderer, snake, food;
+        let score = 0;
+        let direction = new THREE.Vector3(1, 0, 0);
+        let nextDirection = new THREE.Vector3(1, 0, 0);
+        let snakeBody = [];
+        let gameOverState = false;
+        let gridSize = 1;
+        let gridWidth = 15;
+        let moveInterval;
+        let walls = [];
+        let lastUpdateTime = Date.now();
+        let interpolationFactor = 0;
+        const MOVEMENT_DURATION = 150;
+        
+        function init() {
+            if (scene) {
+                while(scene.children.length > 0) { 
+                    const child = scene.children[0];
+                    scene.remove(child);
+                    if (child.isMesh) {
+                        child.geometry.dispose();
+                        child.material.dispose();
+                    }
+                }
+            } else {
+                scene = new THREE.Scene();
+            }
+            scene.background = new THREE.Color(0x000819);
+            
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.set(0, 12, 12);
+            camera.lookAt(0, 0, 0);
+            
+            if (!renderer) {
+                renderer = new THREE.WebGLRenderer({ antialias: true });
+                renderer.setSize(window.innerWidth, window.innerHeight);
+                document.body.appendChild(renderer.domElement);
+            }
+            
+            createGrid();
+            createWalls();
+            
+            const geometry = new THREE.BoxGeometry(0.9, 0.9, 0.9);
+            const material = new THREE.MeshPhongMaterial({ 
+                color: 0x00ff00,
+                emissive: 0x00aa00,
+                shininess: 100
+            });
+            snake = new THREE.Mesh(geometry, material);
+            snake.position.set(0, 0.5, 0);
+            scene.add(snake);
+            snakeBody = [snake];
+            
+            createFood();
+            
+            const ambientLight = new THREE.AmbientLight(0x222222);
+            scene.add(ambientLight);
+            
+            const pointLight = new THREE.PointLight(0x00ff00, 0.5, 20);
+            pointLight.position.set(0, 5, 0);
+            scene.add(pointLight);
+            
+            const colors = [0xff0000, 0x0000ff, 0xff00ff];
+            colors.forEach((color, i) => {
+                const light = new THREE.PointLight(color, 0.3, 20);
+                const angle = (i / colors.length) * Math.PI * 2;
+                light.position.set(Math.cos(angle) * 10, 5, Math.sin(angle) * 10);
+                scene.add(light);
+            });
+
+            if (moveInterval) clearInterval(moveInterval);
+            moveInterval = setInterval(moveSnake, 150);
+        }
+        
+        function createGrid() {
+            const gridHelper = new THREE.GridHelper(gridWidth, gridWidth, 0x0088ff, 0x001830);
+            gridHelper.position.y = 0;
+            scene.add(gridHelper);
+            
+            const groundGeo = new THREE.PlaneGeometry(gridWidth, gridWidth);
+            const groundMat = new THREE.MeshPhongMaterial({
+                color: 0x001830,
+                shininess: 50,
+                transparent: true,
+                opacity: 0.8
+            });
+            const ground = new THREE.Mesh(groundGeo, groundMat);
+            ground.rotation.x = -Math.PI / 2;
+            ground.position.y = 0;
+            scene.add(ground);
+        }
+        
+        function createWalls() {
+            const wallGeometry = new THREE.BoxGeometry(gridWidth, 1, 0.1);
+            const wallMaterial = new THREE.MeshPhongMaterial({
+                color: 0x0088ff,
+                emissive: 0x003366,
+                transparent: true,
+                opacity: 0.3,
+                shininess: 100
+            });
+            
+            const wallPositions = [
+                { pos: [0, 0.5, gridWidth/2], rot: [0, 0, 0] },
+                { pos: [0, 0.5, -gridWidth/2], rot: [0, 0, 0] },
+                { pos: [gridWidth/2, 0.5, 0], rot: [0, Math.PI/2, 0] },
+                { pos: [-gridWidth/2, 0.5, 0], rot: [0, Math.PI/2, 0] }
+            ];
+            
+            wallPositions.forEach(({pos, rot}) => {
+                const wall = new THREE.Mesh(wallGeometry, wallMaterial);
+                wall.position.set(...pos);
+                wall.rotation.set(...rot);
+                scene.add(wall);
+                walls.push(wall);
+            });
+        }
+        
+        function createFood() {
+            if (food) scene.remove(food);
+            const geometry = new THREE.SphereGeometry(0.4);
+            const material = new THREE.MeshPhongMaterial({ 
+                color: 0xff0000,
+                emissive: 0xaa0000,
+                shininess: 100
+            });
+            food = new THREE.Mesh(geometry, material);
+            
+            let validPosition = false;
+            while (!validPosition) {
+                const x = Math.floor(Math.random() * (gridWidth - 2)) - (gridWidth/2 - 1);
+                const z = Math.floor(Math.random() * (gridWidth - 2)) - (gridWidth/2 - 1);
+                food.position.set(x, 0.5, z);
+                
+                validPosition = true;
+                for (let part of snakeBody) {
+                    if (part.position.distanceTo(food.position) < 1) {
+                        validPosition = false;
+                        break;
+                    }
+                }
+            }
+            
+            scene.add(food);
+        }
+        
+        function moveSnake() {
+            if (gameOverState) return;
+            
+            snakeBody.forEach(segment => {
+                segment.oldPosition = segment.position.clone();
+            });
+            
+            direction.copy(nextDirection);
+            
+            const newHead = snakeBody[0].clone();
+            newHead.position.add(direction);
+            
+            newHead.position.x = Math.round(newHead.position.x);
+            newHead.position.z = Math.round(newHead.position.z);
+            
+            if (newHead.position.x >= gridWidth/2) {
+                newHead.position.x = -gridWidth/2 + 1;
+            } else if (newHead.position.x <= -gridWidth/2) {
+                newHead.position.x = gridWidth/2 - 1;
+            }
+            
+            if (newHead.position.z >= gridWidth/2) {
+                newHead.position.z = -gridWidth/2 + 1;
+            } else if (newHead.position.z <= -gridWidth/2) {
+                newHead.position.z = gridWidth/2 - 1;
+            }
+            
+            for (let i = 1; i < snakeBody.length; i++) {
+                const bodyPos = roundVector(snakeBody[i].position);
+                const headPos = roundVector(newHead.position);
+                if (bodyPos.equals(headPos)) {
+                    gameOver();
+                    return;
+                }
+            }
+            
+            if (newHead.position.distanceTo(food.position) < 1) {
+                score++;
+                document.getElementById('score').textContent = `Score: ${score}`;
+                createFoodCollectionEffect(food.position);
+                createFood();
+            } else {
+                const tail = snakeBody.pop();
+                scene.remove(tail);
+            }
+            
+            scene.add(newHead);
+            snakeBody.unshift(newHead);
+            
+            interpolationFactor = 0;
+            lastUpdateTime = Date.now();
+        }
+        
+        function createFoodCollectionEffect(position) {
+            const particleCount = 20;
+            const geometry = new THREE.BufferGeometry();
+            const vertices = [];
+            
+            for (let i = 0; i < particleCount; i++) {
+                vertices.push(
+                    position.x + (Math.random() - 0.5) * 0.5,
+                    position.y + (Math.random() - 0.5) * 0.5,
+                    position.z + (Math.random() - 0.5) * 0.5
+                );
+            }
+            
+            geometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
+            
+            const material = new THREE.PointsMaterial({
+                color: 0xff0000,
+                size: 0.1,
+                transparent: true
+            });
+            
+            const particles = new THREE.Points(geometry, material);
+            scene.add(particles);
+            
+            let opacity = 1;
+            function animateParticles() {
+                if (opacity <= 0) {
+                    scene.remove(particles);
+                    return;
+                }
+                
+                opacity -= 0.1;
+                material.opacity = opacity;
+                
+                const positions = particles.geometry.attributes.position.array;
+                for (let i = 0; i < positions.length; i += 3) {
+                    positions[i] += (Math.random() - 0.5) * 0.1;
+                    positions[i + 1] += 0.1;
+                    positions[i + 2] += (Math.random() - 0.5) * 0.1;
+                }
+                particles.geometry.attributes.position.needsUpdate = true;
+                
+                requestAnimationFrame(animateParticles);
+            }
+            
+            animateParticles();
+        }
+        
+        function roundVector(vector) {
+            return new THREE.Vector3(
+                Math.round(vector.x),
+                Math.round(vector.y),
+                Math.round(vector.z)
+            );
+        }
+        
+        function gameOver() {
+            gameOverState = true;
+            clearInterval(moveInterval);
+            document.getElementById('gameOver').style.display = 'block';
+        }
+        
+        function restart() {
+            if (moveInterval) clearInterval(moveInterval);
+            snakeBody = [];
+            score = 0;
+            document.getElementById('score').textContent = 'Score: 0';
+            document.getElementById('gameOver').style.display = 'none';
+            gameOverState = false;
+            direction.set(1, 0, 0);
+            nextDirection.set(1, 0, 0);
+            
+            init();
+        }
+        
+        document.addEventListener('keydown', (event) => {
+            if (gameOverState && event.key === ' ') {
+                restart();
+                return;
+            }
+            
+            const newDirection = nextDirection.clone();
+            switch(event.key) {
+                case 'ArrowUp':
+                    if (direction.z !== 1) newDirection.set(0, 0, -1);
+                    break;
+                case 'ArrowDown':
+                    if (direction.z !== -1) newDirection.set(0, 0, 1);
+                    break;
+                case 'ArrowLeft':
+                    if (direction.x !== 1) newDirection.set(-1, 0, 0);
+                    break;
+                case 'ArrowRight':
+                    if (direction.x !== -1) newDirection.set(1, 0, 0);
+                    break;
+            }
+            nextDirection.copy(newDirection);
+        });
+        
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+        
+        function animate() {
+            requestAnimationFrame(animate);
+            
+            const currentTime = Date.now();
+            const deltaTime = currentTime - lastUpdateTime;
+            interpolationFactor = Math.min(deltaTime / MOVEMENT_DURATION, 1);
+            
+            snakeBody.forEach(segment => {
+                if (segment.oldPosition) {
+                    segment.position.lerp(segment.oldPosition, 1 - interpolationFactor);
+                }
+            });
+            
+            snakeBody.forEach((segment, index) => {
+                if (index > 0) {
+                    const wave = Math.sin(currentTime * 0.005 + index * 0.5) * 0.1;
+                    segment.position.y = 0.5 + wave;
+                }
+            });
+            
+            renderer.render(scene, camera);
+            
+            scene.children.forEach(child => {
+                if (child.isPointLight && child.color.getHex() !== 0x00ff00) {
+                    child.position.applyAxisAngle(new THREE.Vector3(0, 1, 0), 0.005);
+                }
+            });
+        }
+        
+        init();
+        animate();
+    </script>
+</body>
+</html>
